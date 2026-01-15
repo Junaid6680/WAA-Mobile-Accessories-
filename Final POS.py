@@ -2,13 +2,13 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
-from reportlab.pdfgen import canvas
-import io
 
-# --- Database Initialization ---
+# --- Database & Auto-Update Logic ---
 def init_db():
     conn = sqlite3.connect('waa_mobile_pos.db')
     c = conn.cursor()
+    
+    # Tables creation
     c.execute('CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY, item_name TEXT, cost_price REAL, stock INTEGER)')
     c.execute('CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY, customer_name TEXT, total REAL, date TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY, name TEXT, balance_payable REAL)')
@@ -16,17 +16,20 @@ def init_db():
     c.execute('CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY, description TEXT, amount REAL, date TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS capital (partner TEXT PRIMARY KEY, investment REAL, withdrawals REAL, profit_share REAL)')
     
-    # Testing Data Insertion (Requirement #2: Suppliers)
+    # --- Fix for DatabaseError (Adding missing columns if they don't exist) ---
+    try:
+        c.execute("SELECT withdrawals FROM capital LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE capital ADD COLUMN withdrawals REAL DEFAULT 0.0")
+    
+    # Testing Data for WAA AA Mobile Accessories
     c.execute("SELECT COUNT(*) FROM inventory")
     if c.fetchone()[0] == 0:
         items = [('Samsung Charger', 450, 50), ('IPhone Cable', 300, 40), ('Handsfree MI', 150, 100),
                  ('Power Bank', 2500, 10), ('Glass Protector', 50, 200), ('Back Cover', 120, 80),
-                 ('Airpods Pro', 1800, 15), ('Memory Card 32GB', 600, 30), ('Battery Nokia', 250, 25),
-                 ('Type-C Adapter', 80, 60), ('Car Charger', 350, 20), ('Bluetooth Speaker', 1200, 12),
-                 ('Ring Light', 950, 8), ('USB 64GB', 850, 25), ('Selfie Stick', 200, 15)]
+                 ('Airpods Pro', 1800, 15), ('Memory Card 32GB', 600, 30), ('Battery Nokia', 250, 25)]
         c.executemany("INSERT INTO inventory (item_name, cost_price, stock) VALUES (?,?,?)", items)
         
-        # Suppliers Added for Testing
         c.executemany("INSERT INTO suppliers (name, balance_payable) VALUES (?,?)", 
                       [('ABC Accessories', 50000), ('Hall Road Wholesaler', 25000)])
         
@@ -41,138 +44,127 @@ def init_db():
 
 init_db()
 
-# --- Login Logic ---
+# --- Login System ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.sidebar.title("🔐 Shop Login")
+    st.sidebar.title("🔐 Login")
     user = st.sidebar.text_input("Username")
     pw = st.sidebar.text_input("Password", type="password")
     if st.sidebar.button("Login"):
         if user == "admin" and pw == "waa123":
             st.session_state['logged_in'] = True
             st.rerun()
-        else: st.sidebar.error("Ghalat Password!")
-    st.warning("Pehle Login Karein")
+        else: st.sidebar.error("Ghalat details!")
     st.stop()
 
-# --- Main UI ---
+# --- UI Header (As per your Card) ---
 st.title("📱 WAA AA Mobile Accessories")
+st.markdown("""
+**Shop T-27, 3rd Floor, Hassan Center 2, Hall Road, Lahore.** **Contact:** M. Waqas (0304-4724435, 0315-4899075) | Farman Ali (0303-0075400) | Fareed Ahmed (0328-4080860)
+---
+""")
+
 tabs = st.tabs(["Invoice/Billing", "Receiving", "Inventory", "Suppliers", "Customers", "Expenses", "Capital A/C", "Reports"])
 
-# 1. Invoice (Requirement #1: Total bill at the end)
+# 1. Invoice
 with tabs[0]:
-    st.header("New Order / Bill")
+    st.header("New Order")
     conn = sqlite3.connect('waa_mobile_pos.db')
     cust_list = pd.read_sql("SELECT name FROM customers", conn)['name'].tolist()
-    prod_df = pd.read_sql("SELECT item_name, stock FROM inventory", conn)
+    prod_df = pd.read_sql("SELECT item_name FROM inventory", conn)
     
-    col1, col2 = st.columns(2)
-    with col1: customer = st.selectbox("Select Customer", cust_list)
-    with col2: product = st.selectbox("Select Product", prod_df['item_name'])
-    
+    customer = st.selectbox("Select Customer", cust_list)
+    product = st.selectbox("Select Product", prod_df['item_name'])
     qty = st.number_input("Quantity", min_value=1, value=1)
     s_price = st.number_input("Sale Price", min_value=0.0)
     
     total_bill = qty * s_price
-    st.markdown(f"### **Total Amount: Rs. {total_bill}**") # Bill shown at last
+    st.subheader(f"Total Bill: Rs. {total_bill}")
     
-    if st.button("Generate Bill & Save"):
+    if st.button("Generate & Save Bill"):
         c = conn.cursor()
         c.execute("INSERT INTO sales (customer_name, total, date) VALUES (?,?,?)", (customer, total_bill, datetime.now().strftime('%Y-%m-%d')))
         c.execute("UPDATE customers SET balance_receivable = balance_receivable + ? WHERE name = ?", (total_bill, customer))
         c.execute("UPDATE inventory SET stock = stock - ? WHERE item_name = ?", (qty, product))
         conn.commit()
-        st.success("Bill Saved successfully!")
+        st.success("Bill saved successfully!")
     conn.close()
 
 # 2. Receiving
 with tabs[1]:
     st.header("Receive Payment")
     conn = sqlite3.connect('waa_mobile_pos.db')
-    c_name = st.selectbox("From Customer", pd.read_sql("SELECT name FROM customers", conn))
-    amt = st.number_input("Amount Received", min_value=0.0)
-    if st.button("Update Payment"):
-        conn.execute("UPDATE customers SET balance_receivable = balance_receivable - ? WHERE name = ?", (amt, c_name))
+    c_pay = st.selectbox("Customer Name", pd.read_sql("SELECT name FROM customers", conn))
+    amt_rec = st.number_input("Amount Received", min_value=0.0)
+    if st.button("Confirm Payment"):
+        conn.execute("UPDATE customers SET balance_receivable = balance_receivable - ? WHERE name = ?", (amt_rec, c_pay))
         conn.commit()
-        st.success("Payment Received!")
+        st.success("Payment recorded!")
     conn.close()
 
-# 3. Inventory
-with tabs[2]:
-    st.header("Current Stock")
-    conn = sqlite3.connect('waa_mobile_pos.db')
-    st.dataframe(pd.read_sql("SELECT * FROM inventory", conn), use_container_width=True)
-    conn.close()
-
-# 4. Suppliers (Requirement #2: Test data added in init_db)
-with tabs[3]:
-    st.header("Supplier Balances")
-    conn = sqlite3.connect('waa_mobile_pos.db')
-    st.table(pd.read_sql("SELECT name, balance_payable FROM suppliers", conn))
-    conn.close()
-
-# 5. Customers
-with tabs[4]:
-    st.header("Customer Balances")
-    conn = sqlite3.connect('waa_mobile_pos.db')
-    st.table(pd.read_sql("SELECT name, balance_receivable FROM customers", conn))
-    conn.close()
-
-# 6. Expenses (Requirement #3: Detail adding option)
+# 5. Expenses
 with tabs[5]:
-    st.header("Shop Expenses")
-    desc = st.text_input("Expense Description (e.g., Tea, Electricity Bill)")
-    e_amt = st.number_input("Expense Amount", min_value=0.0)
+    st.header("Add Shop Expense")
+    e_desc = st.text_input("Detail (e.g. Bijli Bill, Tea)")
+    e_amt = st.number_input("Amount", min_value=0.0, key="exp_amt")
     if st.button("Save Expense"):
         conn = sqlite3.connect('waa_mobile_pos.db')
-        conn.execute("INSERT INTO expenses (description, amount, date) VALUES (?,?,?)", (desc, e_amt, datetime.now().strftime('%Y-%m-%d')))
+        conn.execute("INSERT INTO expenses (description, amount, date) VALUES (?,?,?)", (e_desc, e_amt, datetime.now().strftime('%Y-%m-%d')))
         conn.commit()
-        st.success("Expense Recorded!")
+        st.success("Expense added!")
     
     st.subheader("Expense History")
     conn = sqlite3.connect('waa_mobile_pos.db')
     st.dataframe(pd.read_sql("SELECT * FROM expenses", conn), use_container_width=True)
     conn.close()
 
-# 7. Capital Account (Requirement #4: Investment & Withdrawal)
+# 6. Capital Account
 with tabs[6]:
-    st.header("Partners Capital Account")
-    partner = st.selectbox("Select Partner", ["M Waqas", "Farid Khan", "Farman Ali"])
-    opt = st.radio("Transaction Type", ["Investment (Add Money)", "Withdrawal (Take Money)"])
-    cap_amt = st.number_input("Amount", min_value=0.0)
+    st.header("Partners Capital")
+    partner = st.selectbox("Partner", ["M Waqas", "Farid Khan", "Farman Ali"])
+    type_cap = st.radio("Action", ["Investment", "Withdrawal"])
+    cap_val = st.number_input("Amount", min_value=0.0, key="cap_val")
     
-    if st.button("Update Capital Account"):
+    if st.button("Update Capital"):
         conn = sqlite3.connect('waa_mobile_pos.db')
-        if opt == "Investment (Add Money)":
-            conn.execute("UPDATE capital SET investment = investment + ? WHERE partner = ?", (cap_amt, partner))
+        if type_cap == "Investment":
+            conn.execute("UPDATE capital SET investment = investment + ? WHERE partner = ?", (cap_val, partner))
         else:
-            conn.execute("UPDATE capital SET withdrawals = withdrawals + ? WHERE partner = ?", (cap_amt, partner))
+            conn.execute("UPDATE capital SET withdrawals = withdrawals + ? WHERE partner = ?", (cap_val, partner))
         conn.commit()
-        st.success("Account Updated!")
+        st.success("Capital Updated!")
     
     conn = sqlite3.connect('waa_mobile_pos.db')
     st.table(pd.read_sql("SELECT partner, investment, withdrawals FROM capital", conn))
     conn.close()
 
-# 8. Reports (Requirement #5: Daily, Weekly, Monthly)
+# 7. Reports
 with tabs[7]:
-    st.header("Sales & Business Reports")
-    rep_opt = st.selectbox("Report Filter", ["Daily", "Weekly", "Monthly", "Yearly"])
-    
+    st.header("Business Reports")
     conn = sqlite3.connect('waa_mobile_pos.db')
-    sales_df = pd.read_sql("SELECT * FROM sales", conn)
-    exp_df = pd.read_sql("SELECT * FROM expenses", conn)
+    sales = pd.read_sql("SELECT * FROM sales", conn)
+    exps = pd.read_sql("SELECT * FROM expenses", conn)
     
-    # Simple Date Filter Logic
-    today = datetime.now().date()
-    if rep_opt == "Daily": sales_df = sales_df[sales_df['date'] == str(today)]
+    col1, col2 = st.columns(2)
+    col1.metric("Total Sales", f"Rs. {sales['total'].sum()}")
+    col2.metric("Total Expenses", f"Rs. {exps['amount'].sum()}")
     
-    st.subheader(f"{rep_opt} Sales Summary")
-    st.dataframe(sales_df)
-    st.write(f"Total Sales: Rs. {sales_df['total'].sum()}")
-    
-    st.subheader(f"{rep_opt} Expense Summary")
-    st.write(f"Total Expenses: Rs. {exp_df['amount'].sum()}")
+    st.subheader("Sales History")
+    st.dataframe(sales, use_container_width=True)
+    conn.close()
+
+# Other tabs (Inventory, Suppliers, Customers) are same
+with tabs[2]:
+    conn = sqlite3.connect('waa_mobile_pos.db')
+    st.dataframe(pd.read_sql("SELECT * FROM inventory", conn), use_container_width=True)
+    conn.close()
+with tabs[3]:
+    conn = sqlite3.connect('waa_mobile_pos.db')
+    st.table(pd.read_sql("SELECT name, balance_payable FROM suppliers", conn))
+    conn.close()
+with tabs[4]:
+    conn = sqlite3.connect('waa_mobile_pos.db')
+    st.table(pd.read_sql("SELECT name, balance_receivable FROM customers", conn))
     conn.close()
